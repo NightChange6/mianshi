@@ -5,7 +5,9 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 
 import com.xue.mianshi.common.ErrorCode;
+import com.xue.mianshi.config.RedissonConfig;
 import com.xue.mianshi.constant.CommonConstant;
+import com.xue.mianshi.constant.RedisConstant;
 import com.xue.mianshi.exception.BusinessException;
 import com.xue.mianshi.mapper.UserMapper;
 import com.xue.mianshi.model.dto.user.UserQueryRequest;
@@ -19,12 +21,18 @@ import com.xue.mianshi.utils.SqlUtils;
 import lombok.extern.slf4j.Slf4j;
 import me.chanjar.weixin.common.bean.WxOAuth2UserInfo;
 import org.apache.commons.lang3.StringUtils;
+import org.redisson.api.RBitSet;
+import org.redisson.api.RedissonClient;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.util.DigestUtils;
 
+import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
+import java.time.LocalDateTime;
+import java.time.Year;
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -38,6 +46,8 @@ import static com.xue.mianshi.constant.UserConstant.USER_LOGIN_STATE;
 @Slf4j
 public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements UserService {
 
+    @Resource
+    private RedissonClient redissonClient;
     /**
      * 盐值，混淆密码
      */
@@ -269,5 +279,70 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         queryWrapper.orderBy(SqlUtils.validSortField(sortField), sortOrder.equals(CommonConstant.SORT_ORDER_ASC),
                 sortField);
         return queryWrapper;
+    }
+
+    /**
+     * 用户签到
+     * @param userId
+     * @return
+     */
+    @Override
+    public boolean addUserSignIn(Long userId) {
+        //获取当前时间
+        LocalDateTime localDateTime = LocalDateTime.now();
+        //获取用户当前年中签到数据的key
+        String key = RedisConstant.getUserSignPrefix(localDateTime.getYear(), userId);
+        //获取今天是当年地多少天
+        int offset = localDateTime.getDayOfYear();
+        //获取当前key的bitmap
+        RBitSet bitSet = redissonClient.getBitSet(key);
+        if (!bitSet.get(offset)){
+            //如果今天没签到，那就签上
+            return bitSet.set(offset);
+        }
+        return true;
+    }
+    /**
+     * 获取用户某个年份的签到记录
+     *用列表返回[1,20,30]表示该用户在今年第1,20,30天签到，节省传输空间
+     * @param userId 用户 id
+     * @param year   前端传来年份（为空表示当前年份）
+     * @return 签到记录映射
+     */
+    @Override
+    public List<Integer> getUserSignInRecord(long userId, Integer year) {
+        if (year==null){
+            //年份为空，就默认今年
+            LocalDateTime now = LocalDateTime.now();
+            year = now.getYear();
+        }
+        //获取key
+        String key = RedisConstant.getUserSignPrefix(year,userId);
+        //根据key去redis查看该用户当前签到信息
+        RBitSet bitSet = redissonClient.getBitSet(key);
+        //为防止在遍历过程中，每次都要去redis请求当天的签到状态，防止浪费时间io，
+        // 将redis中取到的bitSet存到本地
+        BitSet localBitset = bitSet.asBitSet();
+        //获取当前年天数
+        //todo 在这个地方用jmeter测试一下并发
+        int totalDays = Year.of(year).length();
+        ArrayList<Integer> result = new ArrayList<>();
+        //遍历每一天查看位图中当天是否签到
+//        for (int today = 1; today <= totalDays; today++) {
+//            boolean signed = localBitset.get(today);
+//            //如果签到
+//            if (signed){
+//                result.add(today);
+//            }
+//        }
+        //优化，使用java自带的方法（位运算）
+        //从第0位开始第一个值为1的下标
+        int index = localBitset.nextSetBit(0);
+        while (index>=0){
+            result.add(index);
+            //继续查找下一个index
+            index= localBitset.nextSetBit(index + 1);
+        }
+        return result;
     }
 }

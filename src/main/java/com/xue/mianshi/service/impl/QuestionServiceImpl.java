@@ -1,6 +1,8 @@
 package com.xue.mianshi.service.impl;
 
+import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.collection.CollUtil;
+import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
@@ -9,6 +11,7 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 
 import com.xue.mianshi.common.ErrorCode;
 import com.xue.mianshi.constant.CommonConstant;
+import com.xue.mianshi.model.dto.QuestionEsDTO;
 import com.xue.mianshi.exception.ThrowUtils;
 import com.xue.mianshi.mapper.QuestionMapper;
 import com.xue.mianshi.model.dto.question.QuestionQueryRequest;
@@ -24,10 +27,20 @@ import com.xue.mianshi.utils.SqlUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.elasticsearch.action.search.SearchRequest;
+import org.elasticsearch.action.search.SearchResponse;
+import org.elasticsearch.client.RequestOptions;
+import org.elasticsearch.client.RestHighLevelClient;
+import org.elasticsearch.index.query.BoolQueryBuilder;
+import org.elasticsearch.index.query.QueryBuilders;
+import org.elasticsearch.search.SearchHit;
+import org.elasticsearch.search.SearchHits;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
+import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -48,6 +61,9 @@ public class QuestionServiceImpl extends ServiceImpl<QuestionMapper, Question> i
 
     @Resource
     private QuestionBankQuestionService questionBankQuestionService;
+
+    @Resource
+    private RestHighLevelClient restHighLevelClient;
 
     /**
      * 校验数据
@@ -225,4 +241,79 @@ public class QuestionServiceImpl extends ServiceImpl<QuestionMapper, Question> i
         return questionPage;
     }
 
+    /**
+     * 使用es进行搜索
+     * @param questionQueryRequest
+     * @return
+     */
+    @Override
+    public Page<Question> searchFromEs(QuestionQueryRequest questionQueryRequest) throws IOException {
+        //获取查询条件中的所有查询参数
+        // 获取参数
+        Long id = questionQueryRequest.getId();
+        Long notId = questionQueryRequest.getNotId();
+        String searchText = questionQueryRequest.getSearchText();
+        List<String> tags = questionQueryRequest.getTags();
+        Long questionBankId = questionQueryRequest.getQuestionBankId();
+        Long userId = questionQueryRequest.getUserId();
+        // 注意，ES 的起始页为 0
+        int current = questionQueryRequest.getCurrent() - 1;
+        int pageSize = questionQueryRequest.getPageSize();
+        String sortField = questionQueryRequest.getSortField();
+        String sortOrder = questionQueryRequest.getSortOrder();
+        SearchRequest searchRequest = new SearchRequest("question");
+
+        // 构造查询条件
+        BoolQueryBuilder boolQueryBuilder = QueryBuilders.boolQuery();
+        // 过滤
+        boolQueryBuilder.filter(QueryBuilders.termQuery("isDelete", 0));
+        if (id != null) {
+            boolQueryBuilder.filter(QueryBuilders.termQuery("id", id));
+        }
+        if (notId != null) {
+            boolQueryBuilder.mustNot(QueryBuilders.termQuery("id", notId));
+        }
+        if (userId != null) {
+            boolQueryBuilder.filter(QueryBuilders.termQuery("userId", userId));
+        }
+        if (questionBankId != null) {
+            boolQueryBuilder.filter(QueryBuilders.termQuery("questionBankId", questionBankId));
+        }
+        // 必须包含所有标签
+        if (CollUtil.isNotEmpty(tags)) {
+            for (String tag : tags) {
+                boolQueryBuilder.filter(QueryBuilders.termQuery("tags", tag));
+            }
+        }
+        // 按关键词检索
+        if (StringUtils.isNotBlank(searchText)) {
+            boolQueryBuilder.should(QueryBuilders.matchQuery("title", searchText));
+            boolQueryBuilder.should(QueryBuilders.matchQuery("content", searchText));
+            boolQueryBuilder.should(QueryBuilders.matchQuery("answer", searchText));
+            boolQueryBuilder.minimumShouldMatch(1);
+        }
+        searchRequest.source().query(boolQueryBuilder);
+        //分页
+        searchRequest.source().from(current * pageSize).size(pageSize);
+        SearchResponse searchResponse = restHighLevelClient.search(searchRequest, RequestOptions.DEFAULT);
+        //从es的中的hit中取出结果用于实际分页
+        SearchHits searchHits = searchResponse.getHits();
+        //获取总条数
+        long value = searchHits.getTotalHits().value;
+        //获取具体数据
+        SearchHit[] hits1 = searchResponse.getHits().getHits();
+        //遍历每个hit就能获取结果
+        ArrayList<Question> questionEsDTOS = new ArrayList<>();
+        for (SearchHit documentFields : hits1) {
+            //获取json结果，将其转化为返回值类型
+            // 直接使用DTO内置的转换方法
+            QuestionEsDTO dto =JSONUtil.toBean(documentFields.getSourceAsString(), QuestionEsDTO.class);
+            Question question = QuestionEsDTO.dtoToObj(dto); // 使用已写好的转换方法
+            questionEsDTOS.add(question);
+        }
+        Page<Question> questionPage = new Page<>();
+        questionPage.setTotal(value);
+        questionPage.setRecords(questionEsDTOS);
+        return questionPage;
+    }
 }

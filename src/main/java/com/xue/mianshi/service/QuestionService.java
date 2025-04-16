@@ -9,6 +9,7 @@ import com.xue.mianshi.model.vo.QuestionVO;
 
 
 import javax.servlet.http.HttpServletRequest;
+import java.io.IOException;
 
 /**
  * 题目服务
@@ -59,4 +60,13 @@ public interface QuestionService extends IService<Question> {
      * @return
      */
     Page<Question> listQuestionByPage(QuestionQueryRequest questionQueryRequest);
+
+    /**
+     * 从 ES 查询题目
+     *
+     * @param questionQueryRequest
+     * @return
+     */
+    Page<Question> searchFromEs(QuestionQueryRequest questionQueryRequest) throws IOException;
+
 }
