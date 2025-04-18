@@ -10,6 +10,7 @@ import com.xue.mianshi.model.vo.QuestionVO;
 
 import javax.servlet.http.HttpServletRequest;
 import java.io.IOException;
+import java.util.List;
 
 /**
  * 题目服务
@@ -69,4 +70,5 @@ public interface QuestionService extends IService<Question> {
      */
     Page<Question> searchFromEs(QuestionQueryRequest questionQueryRequest) throws IOException;
 
+    void batchDeleteQuestions(List<Long> questionIdList);
 }

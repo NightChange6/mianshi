@@ -2,6 +2,7 @@ package com.xue.mianshi.controller;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 
+import com.jd.platform.hotkey.client.callback.JdHotKeyStore;
 import com.xue.mianshi.annotation.AuthCheck;
 import com.xue.mianshi.common.BaseResponse;
 import com.xue.mianshi.common.DeleteRequest;
@@ -61,12 +62,10 @@ public class QuestionBankController {
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
     public BaseResponse<Long> addQuestionBank(@RequestBody QuestionBankAddRequest questionBankAddRequest, HttpServletRequest request) {
         ThrowUtils.throwIf(questionBankAddRequest == null, ErrorCode.PARAMS_ERROR);
-        // todo 在此处将实体类和 DTO 进行转换
         QuestionBank questionBank = new QuestionBank();
         BeanUtils.copyProperties(questionBankAddRequest, questionBank);
         // 数据校验
         questionBankService.validQuestionBank(questionBank, true);
-        // todo 填充默认值
         User loginUser = userService.getLoginUser(request);
         questionBank.setUserId(loginUser.getId());
         // 写入数据库
@@ -117,7 +116,6 @@ public class QuestionBankController {
         if (questionBankUpdateRequest == null || questionBankUpdateRequest.getId() <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
         }
-        // todo 在此处将实体类和 DTO 进行转换
         QuestionBank questionBank = new QuestionBank();
         BeanUtils.copyProperties(questionBankUpdateRequest, questionBank);
         // 数据校验
@@ -143,9 +141,16 @@ public class QuestionBankController {
         ThrowUtils.throwIf(questionBankQueryRequest == null, ErrorCode.PARAMS_ERROR);
         Long id = questionBankQueryRequest.getId();
         ThrowUtils.throwIf(id <= 0, ErrorCode.PARAMS_ERROR);
+        String key = "bank_detail_"+id;
+//        if (JdHotKeyStore.isHotKey(key)){
+//            System.out.println(key+"是热值");
+//        }else {
+//            System.out.println("不是热值");
+//        }
         // 查询数据库
         QuestionBank questionBank = questionBankService.getById(id);
         ThrowUtils.throwIf(questionBank == null, ErrorCode.NOT_FOUND_ERROR);
+
         // 查询题库封装类
         QuestionBankVO questionBankVO = questionBankService.getQuestionBankVO(questionBank, request);
         // 是否要关联查询题库下的题目列表
@@ -236,7 +241,6 @@ public class QuestionBankController {
         if (questionBankEditRequest == null || questionBankEditRequest.getId() <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
         }
-        // todo 在此处将实体类和 DTO 进行转换
         QuestionBank questionBank = new QuestionBank();
         BeanUtils.copyProperties(questionBankEditRequest, questionBank);
         // 数据校验
@@ -256,5 +260,4 @@ public class QuestionBankController {
         return ResultUtils.success(true);
     }
 
-    // endregion
 }

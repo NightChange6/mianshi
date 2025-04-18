@@ -11,6 +11,7 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 
 import com.xue.mianshi.common.ErrorCode;
 import com.xue.mianshi.constant.CommonConstant;
+import com.xue.mianshi.exception.BusinessException;
 import com.xue.mianshi.model.dto.QuestionEsDTO;
 import com.xue.mianshi.exception.ThrowUtils;
 import com.xue.mianshi.mapper.QuestionMapper;
@@ -36,6 +37,7 @@ import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.SearchHits;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
@@ -154,7 +156,7 @@ public class QuestionServiceImpl extends ServiceImpl<QuestionMapper, Question> i
         // 对象转封装类
         QuestionVO questionVO = QuestionVO.objToVo(question);
 
-        // todo 可以根据需要为封装对象补充值，不需要的内容可以删除
+
         // region 可选
         // 1. 关联查询用户信息
         Long userId = question.getUserId();
@@ -187,8 +189,6 @@ public class QuestionServiceImpl extends ServiceImpl<QuestionMapper, Question> i
             return QuestionVO.objToVo(question);
         }).collect(Collectors.toList());
 
-        // todo 可以根据需要为封装对象补充值，不需要的内容可以删除
-        // region 可选
         // 1. 关联查询用户信息
         Set<Long> userIdSet = questionList.stream().map(Question::getUserId).collect(Collectors.toSet());
         Map<Long, List<User>> userIdUserListMap = userService.listByIds(userIdSet).stream()
@@ -315,5 +315,30 @@ public class QuestionServiceImpl extends ServiceImpl<QuestionMapper, Question> i
         questionPage.setTotal(value);
         questionPage.setRecords(questionEsDTOS);
         return questionPage;
+    }
+
+    /**
+     * 批量删除题目
+     * @param questionIdList
+     */
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public void batchDeleteQuestions(List<Long> questionIdList) {
+        if (CollUtil.isEmpty(questionIdList)) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "要删除的题目列表为空");
+        }
+        for (Long questionId : questionIdList) {
+            boolean result = this.removeById(questionId);
+            if (!result) {
+                throw new BusinessException(ErrorCode.OPERATION_ERROR, "删除题目失败");
+            }
+            // 移除题目题库关系
+            LambdaQueryWrapper<QuestionBankQuestion> lambdaQueryWrapper = Wrappers.lambdaQuery(QuestionBankQuestion.class)
+                    .eq(QuestionBankQuestion::getQuestionId, questionId);
+            result = questionBankQuestionService.remove(lambdaQueryWrapper);
+            if (!result) {
+                throw new BusinessException(ErrorCode.OPERATION_ERROR, "删除题目题库关联失败");
+            }
+        }
     }
 }

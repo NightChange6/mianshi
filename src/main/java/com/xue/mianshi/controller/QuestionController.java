@@ -1,16 +1,23 @@
 package com.xue.mianshi.controller;
 
+import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.jd.platform.hotkey.client.callback.JdHotKeyStore;
 import com.xue.mianshi.annotation.AuthCheck;
 import com.xue.mianshi.common.BaseResponse;
 import com.xue.mianshi.common.DeleteRequest;
 import com.xue.mianshi.common.ErrorCode;
 import com.xue.mianshi.common.ResultUtils;
+import com.xue.mianshi.constant.RabbitMQConstant;
 import com.xue.mianshi.constant.UserConstant;
 import com.xue.mianshi.exception.BusinessException;
 import com.xue.mianshi.exception.ThrowUtils;
+import com.xue.mianshi.model.dto.QuestionEsDTO;
 import com.xue.mianshi.model.dto.question.QuestionAddRequest;
 import com.xue.mianshi.model.dto.question.QuestionEditRequest;
 import com.xue.mianshi.model.dto.question.QuestionQueryRequest;
@@ -21,13 +28,16 @@ import com.xue.mianshi.model.vo.QuestionVO;
 import com.xue.mianshi.service.QuestionService;
 import com.xue.mianshi.service.UserService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.BeanUtils;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
 import java.io.IOException;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 题目接口
@@ -46,7 +56,22 @@ public class QuestionController {
     @Resource
     private UserService userService;
 
-    // region 增删改查
+    @Resource
+    private RabbitTemplate rabbitTemplate;
+
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
+
+
+
+    //通过caffeine和redis两级缓存获取首页热点数据
+    private final Cache<String, String> LOCAL_CACHE =
+            Caffeine.newBuilder().initialCapacity(1024)
+                    .maximumSize(10000L)
+                    // 缓存 5 分钟移除
+                    .expireAfterWrite(5L, TimeUnit.MINUTES)
+                    .build();
 
     /**
      * 创建题目
@@ -59,17 +84,22 @@ public class QuestionController {
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
     public BaseResponse<Long> addQuestion(@RequestBody QuestionAddRequest questionAddRequest, HttpServletRequest request) {
         ThrowUtils.throwIf(questionAddRequest == null, ErrorCode.PARAMS_ERROR);
-        // todo 在此处将实体类和 DTO 进行转换
         Question question = new Question();
+        String string = questionAddRequest.getTags().toString();
         BeanUtils.copyProperties(questionAddRequest, question);
+        question.setTags(string);
         // 数据校验
         questionService.validQuestion(question, true);
-        // todo 填充默认值
         User loginUser = userService.getLoginUser(request);
         question.setUserId(loginUser.getId());
         // 写入数据库
         boolean result = questionService.save(question);
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
+        //将question数据转化成QuestionEsDTO
+        QuestionEsDTO questionEsDTO = BeanUtil.copyProperties(question, QuestionEsDTO.class);
+        questionEsDTO.setTags(questionAddRequest.getTags());
+        //将数据传给mq，让mq存入es
+        rabbitTemplate.convertAndSend(RabbitMQConstant.Direct_Exchange_ElasticSearch,"es",questionEsDTO);
         // 返回新写入的数据 id
         long newQuestionId = question.getId();
         return ResultUtils.success(newQuestionId);
@@ -115,8 +145,8 @@ public class QuestionController {
         if (questionUpdateRequest == null || questionUpdateRequest.getId() <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
         }
-        // todo 在此处将实体类和 DTO 进行转换
         Question question = new Question();
+        String string = questionUpdateRequest.getTags().toString();
         BeanUtils.copyProperties(questionUpdateRequest, question);
         // 数据校验
         questionService.validQuestion(question, false);
@@ -125,8 +155,14 @@ public class QuestionController {
         Question oldQuestion = questionService.getById(id);
         ThrowUtils.throwIf(oldQuestion == null, ErrorCode.NOT_FOUND_ERROR);
         // 操作数据库
+        question.setTags(string);
         boolean result = questionService.updateById(question);
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
+        //将question数据转化成QuestionEsDTO
+        QuestionEsDTO questionEsDTO = BeanUtil.copyProperties(question, QuestionEsDTO.class);
+        questionEsDTO.setTags(questionUpdateRequest.getTags());
+        //将数据传给mq，让mq存入es
+        rabbitTemplate.convertAndSend(RabbitMQConstant.Direct_Exchange_ElasticSearch,"es.add",questionEsDTO);
         return ResultUtils.success(true);
     }
 
@@ -139,13 +175,36 @@ public class QuestionController {
     @GetMapping("/get/vo")
     public BaseResponse<QuestionVO> getQuestionVOById(long id, HttpServletRequest request) {
         ThrowUtils.throwIf(id <= 0, ErrorCode.PARAMS_ERROR);
-        // 查询数据库
-        Question question = questionService.getById(id);
-        ThrowUtils.throwIf(question == null, ErrorCode.NOT_FOUND_ERROR);
-        // 获取封装类
-        return ResultUtils.success(questionService.getQuestionVO(question, request));
-    }
+        String key = "question:id:"+id;
+        //在此处判断该题目是否为热点数据
+        if (JdHotKeyStore.isHotKey(key)){
+            //如果是热点题目,判断本地缓存有没有
+            String localCache = LOCAL_CACHE.getIfPresent(key);
+            if (StrUtil.isNotBlank(localCache)){
+                //本地缓存存在，获取封装类返回
+                Question question = JSONUtil.toBean(localCache, Question.class);
+                // 获取封装类返回
+                return ResultUtils.success(questionService.getQuestionVO(question, request));
+            }
+            //如果本地缓存不存在,去查redis
+            String redisCache = stringRedisTemplate.opsForValue().get(key);
+            if (StrUtil.isNotBlank(redisCache)){
+                //redis缓存存在，获取封装类返回
+                Question question = JSONUtil.toBean(redisCache, Question.class);
+                // 获取封装类返回
+                return ResultUtils.success(questionService.getQuestionVO(question, request));
+            }
+            //如果不存在任何缓存，那就要去查数据库然后异步构建缓存
+            //获取锁，防止多个用户对同一个题目缓存构建
+            // 查询数据库
+            Question question = questionService.getById(id);
+            ThrowUtils.throwIf(question == null, ErrorCode.NOT_FOUND_ERROR);
+            // 获取封装类
+            return ResultUtils.success(questionService.getQuestionVO(question, request));
 
+        }
+        return null;
+    }
     /**
      * 分页获取题目列表（仅管理员可用）
      *
@@ -219,12 +278,11 @@ public class QuestionController {
         if (questionEditRequest == null || questionEditRequest.getId() <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
         }
-        // todo 在此处将实体类和 DTO 进行转换
         Question question = new Question();
         BeanUtils.copyProperties(questionEditRequest, question);
         List<String> tags = questionEditRequest.getTags();
         if (tags != null) {
-            question.setTags(JSONUtil.toJsonStr(tags));
+            question.setTags(tags.toString());
         }
         // 数据校验
         questionService.validQuestion(question, false);
@@ -240,6 +298,11 @@ public class QuestionController {
         // 操作数据库
         boolean result = questionService.updateById(question);
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
+        //将question数据转化成QuestionEsDTO
+        QuestionEsDTO questionEsDTO = BeanUtil.copyProperties(question, QuestionEsDTO.class);
+        questionEsDTO.setTags(questionEditRequest.getTags());
+        //将数据传给mq，让mq存入es
+        rabbitTemplate.convertAndSend(RabbitMQConstant.Direct_Exchange_ElasticSearch,"es.add",questionEsDTO);
         return ResultUtils.success(true);
     }
 
@@ -249,6 +312,7 @@ public class QuestionController {
         long size = questionQueryRequest.getPageSize();
         // 限制爬虫
         ThrowUtils.throwIf(size > 200, ErrorCode.PARAMS_ERROR);
+        //使用es搜索更快
         Page<Question> questionPage = questionService.searchFromEs(questionQueryRequest);
         return ResultUtils.success(questionService.getQuestionVOPage(questionPage, request));
     }
