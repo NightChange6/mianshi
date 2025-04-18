@@ -1,6 +1,5 @@
 package com.xue.mianshi.service.impl;
 
-import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -155,8 +154,6 @@ public class QuestionServiceImpl extends ServiceImpl<QuestionMapper, Question> i
     public QuestionVO getQuestionVO(Question question, HttpServletRequest request) {
         // 对象转封装类
         QuestionVO questionVO = QuestionVO.objToVo(question);
-
-
         // region 可选
         // 1. 关联查询用户信息
         Long userId = question.getUserId();
@@ -169,6 +166,24 @@ public class QuestionServiceImpl extends ServiceImpl<QuestionMapper, Question> i
         // endregion
         return questionVO;
     }
+
+    @Override
+    public QuestionVO getQuestionVO(Question question) {
+        // 对象转封装类
+        QuestionVO questionVO = QuestionVO.objToVo(question);
+        // region 可选
+        // 1. 关联查询用户信息
+        Long userId = question.getUserId();
+        User user = null;
+        if (userId != null && userId > 0) {
+            user = userService.getById(userId);
+        }
+        UserVO userVO = userService.getUserVO(user);
+        questionVO.setUser(userVO);
+        // endregion
+        return questionVO;
+    }
+
 
     /**
      * 分页获取题目封装

@@ -141,7 +141,7 @@ public class QuestionBankController {
         ThrowUtils.throwIf(questionBankQueryRequest == null, ErrorCode.PARAMS_ERROR);
         Long id = questionBankQueryRequest.getId();
         ThrowUtils.throwIf(id <= 0, ErrorCode.PARAMS_ERROR);
-        String key = "bank_detail_"+id;
+//        String key = "bank_detail_"+id;
 //        if (JdHotKeyStore.isHotKey(key)){
 //            System.out.println(key+"是热值");
 //        }else {

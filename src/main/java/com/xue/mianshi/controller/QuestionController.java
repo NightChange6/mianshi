@@ -5,39 +5,39 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
 import com.jd.platform.hotkey.client.callback.JdHotKeyStore;
 import com.xue.mianshi.annotation.AuthCheck;
 import com.xue.mianshi.common.BaseResponse;
 import com.xue.mianshi.common.DeleteRequest;
 import com.xue.mianshi.common.ErrorCode;
 import com.xue.mianshi.common.ResultUtils;
+import com.xue.mianshi.config.CaffeineConfig;
 import com.xue.mianshi.constant.RabbitMQConstant;
 import com.xue.mianshi.constant.UserConstant;
 import com.xue.mianshi.exception.BusinessException;
 import com.xue.mianshi.exception.ThrowUtils;
 import com.xue.mianshi.model.dto.QuestionEsDTO;
-import com.xue.mianshi.model.dto.question.QuestionAddRequest;
-import com.xue.mianshi.model.dto.question.QuestionEditRequest;
-import com.xue.mianshi.model.dto.question.QuestionQueryRequest;
-import com.xue.mianshi.model.dto.question.QuestionUpdateRequest;
+import com.xue.mianshi.model.dto.question.*;
 import com.xue.mianshi.model.entity.Question;
 import com.xue.mianshi.model.entity.User;
 import com.xue.mianshi.model.vo.QuestionVO;
 import com.xue.mianshi.service.QuestionService;
 import com.xue.mianshi.service.UserService;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.BeanUtils;
 import org.springframework.data.redis.core.StringRedisTemplate;
+
 import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
 import java.io.IOException;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
+
+
 
 /**
  * 题目接口
@@ -62,16 +62,9 @@ public class QuestionController {
     @Resource
     private StringRedisTemplate stringRedisTemplate;
 
+    @Resource
+    private RedissonClient redissonClient;
 
-
-
-    //通过caffeine和redis两级缓存获取首页热点数据
-    private final Cache<String, String> LOCAL_CACHE =
-            Caffeine.newBuilder().initialCapacity(1024)
-                    .maximumSize(10000L)
-                    // 缓存 5 分钟移除
-                    .expireAfterWrite(5L, TimeUnit.MINUTES)
-                    .build();
 
     /**
      * 创建题目
@@ -179,31 +172,46 @@ public class QuestionController {
         //在此处判断该题目是否为热点数据
         if (JdHotKeyStore.isHotKey(key)){
             //如果是热点题目,判断本地缓存有没有
-            String localCache = LOCAL_CACHE.getIfPresent(key);
+            String localCache = CaffeineConfig.get(key);
             if (StrUtil.isNotBlank(localCache)){
                 //本地缓存存在，获取封装类返回
-                Question question = JSONUtil.toBean(localCache, Question.class);
+                QuestionVO questionVO = JSONUtil.toBean(localCache, QuestionVO.class);
                 // 获取封装类返回
-                return ResultUtils.success(questionService.getQuestionVO(question, request));
+                return ResultUtils.success(questionVO);
             }
             //如果本地缓存不存在,去查redis
             String redisCache = stringRedisTemplate.opsForValue().get(key);
             if (StrUtil.isNotBlank(redisCache)){
                 //redis缓存存在，获取封装类返回
-                Question question = JSONUtil.toBean(redisCache, Question.class);
+                QuestionVO questionVO = JSONUtil.toBean(redisCache, QuestionVO.class);
                 // 获取封装类返回
-                return ResultUtils.success(questionService.getQuestionVO(question, request));
+                return ResultUtils.success(questionVO);
             }
             //如果不存在任何缓存，那就要去查数据库然后异步构建缓存
             //获取锁，防止多个用户对同一个题目缓存构建
-            // 查询数据库
-            Question question = questionService.getById(id);
-            ThrowUtils.throwIf(question == null, ErrorCode.NOT_FOUND_ERROR);
-            // 获取封装类
-            return ResultUtils.success(questionService.getQuestionVO(question, request));
-
+            RLock lock = redissonClient.getLock(key);
+            boolean b = lock.tryLock();
+            if (b){
+                //成功获取锁
+                //异步构建缓存
+                try {
+                    //根据用户问题id去构建缓存
+                    QuestionVO questionVO = (QuestionVO) rabbitTemplate.convertSendAndReceive(RabbitMQConstant.Direct_Exchange_Cache, "cache", id);
+                    return ResultUtils.success(questionVO);
+                }catch (Exception e){
+                    throw new BusinessException(ErrorCode.OPERATION_ERROR,"操作失败");
+                }
+            }else {
+                //重试
+                getQuestionVOById(id,request);
+            }
         }
-        return null;
+        //如果不是热点数据，从数据库中取
+        // 查询数据库
+        Question question = questionService.getById(id);
+        ThrowUtils.throwIf(question == null, ErrorCode.NOT_FOUND_ERROR);
+        // 获取封装类
+        return ResultUtils.success(questionService.getQuestionVO(question, request));
     }
     /**
      * 分页获取题目列表（仅管理员可用）

@@ -45,6 +45,8 @@ public interface QuestionService extends IService<Question> {
      */
     QuestionVO getQuestionVO(Question question, HttpServletRequest request);
 
+    QuestionVO getQuestionVO(Question question);
+
     /**
      * 分页获取题目封装
      *
