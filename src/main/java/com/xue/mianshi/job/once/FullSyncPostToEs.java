@@ -38,7 +38,7 @@ import org.springframework.stereotype.Component;
  * @from 
  */
 
-@Component
+//@Component
 @Slf4j
 public class FullSyncPostToEs implements CommandLineRunner {
 

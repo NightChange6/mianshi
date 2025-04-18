@@ -169,10 +169,26 @@ public class QuestionController {
     public BaseResponse<QuestionVO> getQuestionVOById(long id, HttpServletRequest request) {
         ThrowUtils.throwIf(id <= 0, ErrorCode.PARAMS_ERROR);
         String key = "question:id:"+id;
+        //判断缓存中有没有
+        String localCache = CaffeineConfig.get(key);
+        if (StrUtil.isNotBlank(localCache)){
+            //本地缓存存在，获取封装类返回
+            QuestionVO questionVO = JSONUtil.toBean(localCache, QuestionVO.class);
+            // 获取封装类返回
+            return ResultUtils.success(questionVO);
+        }
+        //如果本地缓存不存在,去查redis
+        String redisCache = stringRedisTemplate.opsForValue().get(key);
+        if (StrUtil.isNotBlank(redisCache)){
+            //redis缓存存在，获取封装类返回
+            QuestionVO questionVO = JSONUtil.toBean(redisCache, QuestionVO.class);
+            // 获取封装类返回
+            return ResultUtils.success(questionVO);
+        }
         //在此处判断该题目是否为热点数据
         if (JdHotKeyStore.isHotKey(key)){
             //如果是热点题目,判断本地缓存有没有
-            String localCache = CaffeineConfig.get(key);
+            localCache = CaffeineConfig.get(key);
             if (StrUtil.isNotBlank(localCache)){
                 //本地缓存存在，获取封装类返回
                 QuestionVO questionVO = JSONUtil.toBean(localCache, QuestionVO.class);
@@ -180,7 +196,7 @@ public class QuestionController {
                 return ResultUtils.success(questionVO);
             }
             //如果本地缓存不存在,去查redis
-            String redisCache = stringRedisTemplate.opsForValue().get(key);
+            redisCache = stringRedisTemplate.opsForValue().get(key);
             if (StrUtil.isNotBlank(redisCache)){
                 //redis缓存存在，获取封装类返回
                 QuestionVO questionVO = JSONUtil.toBean(redisCache, QuestionVO.class);
